@@ -3,6 +3,9 @@
 #include <time.h>
 #include <iostream>
 #include <unistd.h>
+#include <queue>
+#include <mutex> 
+#include <thread>
 using namespace std;
 
 
@@ -13,86 +16,86 @@ typedef struct event{
 	void * data;
 } Event;
 
-typedef struct node{
-	struct node * next;
-	Event e;
-}Node;
-
 
 bool trigger = false;
-Node * queue_head = NULL;
-Node * cur_ptr = queue_head; 
-
-void init(){
-	trigger = false;
-}
-
-void openTrigger(){
-	trigger = true;
-}
-
-void closeTrigger(){
-	trigger = false;
-}
-
+mutex mtx;
+mutex outMtx;
+queue<Event *> event_queue; 
 
 bool callback_register(Event * e){
 	if(trigger == false){
-		Node * node = (Node *) malloc(sizeof(Node));
-		node->next =  NULL;
-		if(cur_ptr == NULL){
-			queue_head = node;
-		}
-		else{
-			cur_ptr->next = node;
-		}
-		//here use memcpy, cause the client may want to free the event after it call the register
-		memcpy(&(node->e),e,sizeof(Event));
-		cur_ptr = node;
-		printf("callback_register:successfully cur_ptr:%p\n",(char *)cur_ptr);
+		Event * node = (Event *) malloc(sizeof(Event));
+		memcpy(node,e,sizeof(Event));
+		mtx.lock();
+		event_queue.push(node);
+	
+		mtx.unlock();
+		outMtx.lock();
+		cout<<"register successfully\n"<<endl;
+		outMtx.unlock();
+		
 	}
 	else{
-		//this should begin after all callbacks are invoked in queue?
+		//The register should not be blocked, the callback function be invoked by worker thread 
+		//Thus I think should also be push on to queue
+		//If this callback should be executed immediatedly, should interrupt one workerthread to run it 
 		e->handler(e->data);	
-
-		//TODO:free this event or not
 	}
 	return true;
 }
 
+//TODO: also this workerthread responsible for fire_event, should also be in waiting state, wait for 
+//the signal that the queue is not empty
 void event_fire(){
-	if(trigger == true && queue_head != NULL){
-		do{
-			printf("begin event fire %p\n",queue_head);
-			Node * node = queue_head;
-			Event * e = &(node->e);
-			queue_head = queue_head->next;
+	while(trigger == true){
+		Event * e;
+		mtx.lock();
+		if(!event_queue.empty()){
+			e = event_queue.front();
+			event_queue.pop();
+			mtx.unlock();
 			e->handler(e->data);
-			free(node);
-		}while(trigger == true && queue_head != NULL);
-	}
+			free(e);
+		}
+		else{
+			mtx.unlock();
+			outMtx.lock();
+			cout<<"Ready to finish"<<endl;
+			outMtx.unlock();
+			break;
+		}
 	
+	}	
 }
 
 //Test callback functions
 void func1(void * data1){
-	printf("callback function 1:%p\n",data1);
+	outMtx.lock();
+	cout<<"callback function 1:"<<data1<<"  id"<<this_thread::get_id()<<endl;
+	outMtx.unlock();
 }
 void func2(void * data2){
-	printf("callback function 2:%p\n",data2);
+	outMtx.lock();
+	cout<<"callback function 2:"<<data2<<"  id"<<this_thread::get_id()<<endl;
+	outMtx.unlock();
 }
 void func3(void * data3){
-	printf("callback function 3:%p\n",data3);
+	outMtx.lock();
+	cout<<"callback function 3:"<<data3<<"  id"<<this_thread::get_id()<<endl;
+	outMtx.unlock();
 }
 void func4(void * data4){
-	printf("callback function 4:%p\n",data4);
+	outMtx.lock();
+	cout<<"callback function 4:"<<data4<<"  id"<<this_thread::get_id()<<endl;
+	outMtx.unlock();
 }
 void func5(void * data5){
-	printf("callback function 5:%p\n",data5);
+	outMtx.lock();
+	cout<<"callback function 5:"<<data5<<"  id"<<this_thread::get_id()<<endl;
+	outMtx.unlock();
 }
 
 int main(int argc, char ** argv){
-	init();
 	Event * e1 =(Event *) malloc(sizeof(Event));
 	e1->handler = func1;
 	e1->data = (void *)1;
@@ -110,16 +113,29 @@ int main(int argc, char ** argv){
 	e5->data = (void *)5;
 
 	//register callback: push into queue
-	callback_register(e1);
-	callback_register(e2);
-	callback_register(e3);
-	callback_register(e4);
-	callback_register(e5);
+	thread t1(callback_register,e1);
+	thread t2(callback_register,e2);
+	thread t3(callback_register,e3);
+	thread t4(callback_register,e4);
+	thread t5(callback_register,e5);
+	usleep(100);
 
-	openTrigger();
+	thread w1(event_fire);
+	thread w2(event_fire);
 
-	event_fire();
-	callback_register(e1);
+
+	trigger = true;
+
+	t1.join();
+	t2.join();
+	t3.join();
+	t4.join();
+	t5.join();
+
+	
+	w1.join();
+	w2.join();
+	
 
 
 }
