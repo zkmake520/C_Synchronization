@@ -6,6 +6,7 @@
 #include <queue>
 #include <mutex> 
 #include <thread>
+#include <condition_variable>
 using namespace std;
 
 
@@ -20,51 +21,59 @@ typedef struct event{
 bool trigger = false;
 mutex mtx;
 mutex outMtx;
+condition_variable cv;
 queue<Event *> event_queue; 
 
 bool callback_register(Event * e){
-	if(trigger == false){
-		Event * node = (Event *) malloc(sizeof(Event));
-		memcpy(node,e,sizeof(Event));
-		mtx.lock();
-		event_queue.push(node);
-	
-		mtx.unlock();
-		outMtx.lock();
-		cout<<"register successfully\n"<<endl;
-		outMtx.unlock();
-		
-	}
-	else{
-		//The register should not be blocked, the callback function be invoked by worker thread 
-		//Thus I think should also be push on to queue
-		//If this callback should be executed immediatedly, should interrupt one workerthread to run it 
-		e->handler(e->data);	
-	}
+	int size ;
+
+	Event * node = (Event *) malloc(sizeof(Event));
+	memcpy(node,e,sizeof(Event));
+	mtx.lock();
+	event_queue.push(node);
+	size = event_queue.size();
+	mtx.unlock();
+	outMtx.lock();
+	cout<<"register successfully size "<<size<<endl;
+	outMtx.unlock();
+	cv.notify_all();
 	return true;
 }
 
-//TODO: also this workerthread responsible for fire_event, should also be in waiting state, wait for 
-//the signal that the queue is not empty
+void invokeTrigger(){
+	trigger =true;
+	cv.notify_all();
+}
+void closeTrigger(){
+	trigger = false;
+}
+bool callback_available(){
+	return trigger == true && !event_queue.empty(); 
+}
 void event_fire(){
-	while(trigger == true){
-		Event * e;
-		mtx.lock();
-		if(!event_queue.empty()){
-			e = event_queue.front();
-			event_queue.pop();
-			mtx.unlock();
-			e->handler(e->data);
-			free(e);
+	while(true){
+		unique_lock<mutex> lck(mtx);
+		cv.wait(lck,callback_available);
+		outMtx.lock();
+		cout<<this_thread::get_id()<<" is wake up "<<endl;
+		outMtx.unlock();
+		lck.unlock();
+		while(trigger == true){
+			Event * e;
+			mtx.lock();
+			if(!event_queue.empty()){
+				e = event_queue.front();
+				event_queue.pop();
+				mtx.unlock();
+				e->handler(e->data);
+				free(e);
+			}
+			else{
+				mtx.unlock();
+				break;
+			}
+		
 		}
-		else{
-			mtx.unlock();
-			outMtx.lock();
-			cout<<"Ready to finish"<<endl;
-			outMtx.unlock();
-			break;
-		}
-	
 	}	
 }
 
@@ -112,30 +121,37 @@ int main(int argc, char ** argv){
 	e5->handler = func5;
 	e5->data = (void *)5;
 
-	//register callback: push into queue
 	thread t1(callback_register,e1);
 	thread t2(callback_register,e2);
+	thread w1(event_fire);
+	thread w2(event_fire);
 	thread t3(callback_register,e3);
 	thread t4(callback_register,e4);
 	thread t5(callback_register,e5);
 	usleep(100);
 
-	thread w1(event_fire);
-	thread w2(event_fire);
-
-
-	trigger = true;
+	invokeTrigger();
 
 	t1.join();
 	t2.join();
 	t3.join();
 	t4.join();
 	t5.join();
-
-	
-	w1.join();
-	w2.join();
-	
-
+	int cnt = 0;
+	while(true){
+		if(cnt == 5){
+			closeTrigger();
+		}
+		if(cnt == 10){
+			invokeTrigger();
+		}
+		if(cnt == 15){
+			break;
+		}
+		thread t (callback_register,e1);
+		t.join();
+		cnt++;
+	}
+	exit(1);
 
 }
